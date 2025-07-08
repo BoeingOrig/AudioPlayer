@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/AudioPlayer"/>
+    <qresource prefix="/">
+        <file>res/icons/icon_pause.png</file>
+        <file>res/icons/icon_play.png</file>
+    </qresource>
+</RCC>

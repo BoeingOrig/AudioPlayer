@@ -1,0 +1,244 @@
+#include "AudioPlayer.h" // Используем заголовочный файл
+#include <QFileDialog>   // Директория для диалога открытия файла
+#include <QUrl>          // Директория для работы с URL файлов
+#include <QFileInfo>     // Директория для получения имени файла
+#include <QDebug>        // Директория для отладочных сообщений
+#include <QSlider>       // Директория для работы со слайдером
+#include <QCloseEvent>   // Для closeEvent
+#include <QSettings>     // Для QSettings
+#include <QTime>         // Директория для форматирования времени
+
+// Конструктор класса AudioPlayer
+AudioPlayer::AudioPlayer(QWidget* parent)
+    : QMainWindow(parent)
+    , ui() // Инициализируем объект ui
+{
+    ui.setupUi(this); // Настраиваем пользовательский интерфейс, определенный в .ui файле
+
+    // Инициализация QAudioOutput перед QMediaPlayer
+    // Создаем объект для вывода аудио. 'this' указывает, что родительским объектом является AudioPlayer,
+    // что обеспечивает автоматическое удаление при удалении AudioPlayer.
+    audioOutput = new QAudioOutput(this);
+
+    // Создаем объект плеера. 'this' также указывает родительский объект.
+    player = new QMediaPlayer(this);
+
+    // Связываем плеер с выводом аудио. Это необходимо для того, чтобы плеер знал,
+    // куда отправлять звуковые данные.
+    player->setAudioOutput(audioOutput);
+
+    // Инициализируем иконки (используй правильные пути к своим иконкам!)
+    playIcon = QIcon(":/res/icons/icon_play.png");
+    pauseIcon = QIcon(":/res/icons/icon_pause.png");
+
+    // Устанавливаем начальную иконку для кнопки "Воспроизвести"
+    // Мы предполагаем, что actionPlay - это та кнопка, которую ты хочешь использовать для play/pause
+    ui.actionPlayPause->setIcon(playIcon);
+
+    // Подключаем сигнал изменения состояния воспроизведения плеера к нашему слоту
+    connect(player, &QMediaPlayer::playbackStateChanged, this, &AudioPlayer::on_player_playbackStateChanged);
+
+    // Создаем объект QSettings.
+    // Первый параметр - название организации, второй - название приложения.
+    // Это важно для того, чтобы QSettings знал, куда сохранять настройки.
+    QSettings settings("ByteWorks", "AudioPlayer"); // Создаем объект QSettings [cite: 11]
+
+    // Загружаем сохраненную громкость. Если настройка не найдена, используем 0.75 по умолчанию.
+    // Мы хотим, чтобы по умолчанию было 0.75, если до этого ничего не сохранялось.
+    qreal savedVolume = settings.value("volume", 0.75).toReal(); // Использовать 0.75 по умолчанию
+    qDebug() << "Загруженная громкость (из настроек):" << savedVolume; // Отладочное сообщение
+
+    // Устанавливаем загруженную громкость для QAudioOutput
+    audioOutput->setVolume(savedVolume); // ИСПОЛЬЗУЕМ ЗАГРУЖЕННОЕ ЗНАЧЕНИЕ!
+
+    // Устанавливаем значение ползунка громкости, соответствующее загруженной громкости
+    ui.volumeSlider->setValue(static_cast<int>(savedVolume * 100)); // ИСПОЛЬЗУЕМ ЗАГРУЖЕННОЕ ЗНАЧЕНИЕ!
+    qDebug() << "Ползунок установлен на:" << ui.volumeSlider->value(); // Отладочное сообщение
+
+    // Подключаем сигнал изменения значения ползунка к слоту изменения громкости audioOutput
+    connect(ui.volumeSlider, &QSlider::valueChanged, [this](int value) {
+        qreal volume = value / 100.0;
+        audioOutput->setVolume(volume);
+        qDebug() << "Громкость изменена через ползунок на:" << volume; // Отладочное сообщение
+    });
+
+    // Инициализируем метки времени
+    ui.positionLabel->setText(formatTime(0));
+    ui.durationLabel->setText(formatTime(0));
+
+    // Подключаем сигналы плеера к нашим слотам
+    connect(player, &QMediaPlayer::positionChanged, this, &AudioPlayer::on_player_positionChanged);
+    connect(player, &QMediaPlayer::durationChanged, this, &AudioPlayer::on_player_durationChanged);
+
+    // Подключаем сигналы ползунка времени к нашим слотам
+    connect(ui.positionSlider, &QSlider::sliderPressed, this, &AudioPlayer::on_positionSlider_sliderPressed);
+    connect(ui.positionSlider, &QSlider::sliderReleased, this, &AudioPlayer::on_positionSlider_sliderReleased);
+    // Это подключение будет обновлять метку времени при перетаскивании, но не будет изменять позицию плеера
+    connect(ui.positionSlider, &QSlider::valueChanged, this, &AudioPlayer::on_positionSlider_valueChanged);
+    // Это подключение будет обновлять метку времени при перетаскивании, но не будет изменять позицию плеера
+    connect(ui.positionSlider, &QSlider::valueChanged, this, &AudioPlayer::on_positionSlider_valueChanged);
+}
+
+// Деструктор класса AudioPlayer
+// Освобождение памяти для объектов, созданных с 'new',
+// но в данном случае QMediaPlayer и QAudioOutput удалятся автоматически,
+// так как у них указан родительский объект 'this' в конструкторе.
+AudioPlayer::~AudioPlayer()
+{
+    // ui.AudioPlayerClass ui - это объект, он удаляется автоматически
+    // Если бы ui был указателем (Ui::AudioPlayerClass *ui), то здесь был бы 'delete ui;'
+}
+
+// Переопределение closeEvent для сохранения настроек
+void AudioPlayer::closeEvent(QCloseEvent* event)
+{
+    QSettings settings("ByteWorks", "AudioPlayer"); // Используй те же названия организации и приложения!
+    qreal currentVolume = audioOutput->volume();
+    settings.setValue("volume", currentVolume);
+    qDebug() << "Сохранение громкости при закрытии:" << currentVolume; // Отладочное сообщение
+
+    // Обязательно синхронизируем настройки, чтобы они были немедленно записаны на диск
+    // Иногда это помогает, если приложение закрывается очень быстро.
+    settings.sync();
+    qDebug() << "Настройки синхронизированы.";
+
+    QMainWindow::closeEvent(event);
+}
+
+//  Слот для открытия аудиофайла
+void AudioPlayer::on_actionOpen_File_triggered()
+{
+    // Открываем стандартный диалог выбора файла.
+    // Первый параметр: родительское окно.
+    // Второй параметр: заголовок диалога.
+    // Третий параметр: начальный каталог (пустая строка означает текущий или последний использованный).
+    // Четвертый параметр: фильтр файлов, чтобы показывать только аудиофайлы.
+    QString filePath = QFileDialog::getOpenFileName(this, tr("Open audio file"), "", tr("Audio files (*.mp3 *.wav *.flac *.ogg);;All files (*.*)"));
+
+    if (!filePath.isEmpty()) { // Если пользователь выбрал файл и не отменил диалог
+        // Устанавливаем выбранный файл как источник для плеера.
+        // QUrl::fromLocalFile() преобразует локальный путь к файлу в формат URL,
+        // который QMediaPlayer может использовать.
+        player->setSource(QUrl::fromLocalFile(filePath));
+
+        // Отображаем имя выбранного файла в строке состояния приложения.
+        // QFileInfo(filePath).fileName() извлекает только имя файла из полного пути.
+        ui.statusBar->showMessage(tr("File selected: %1").arg(QFileInfo(filePath).fileName()));
+    }
+}
+
+// Спот для отслеживания изменения состояния воспроизведения плеера
+void AudioPlayer::on_actionPlayPause_triggered() // <--- Теперь этот слот будет выполнять роль Play/Pause
+{
+    if (player->source().isValid()) {
+        if (player->playbackState() == QMediaPlayer::PlayingState) {
+            player->pause(); // Если играет, ставим на паузу
+        }
+        else if (player->playbackState() == QMediaPlayer::PausedState || player->playbackState() == QMediaPlayer::StoppedState) {
+            player->play();  // Если на паузе или остановлено, воспроизводим
+        }
+    }
+    else {
+        // Если файл не выбран, пытаемся открыть диалог выбора файла
+        ui.statusBar->showMessage(tr("No file selected. Please open a file first."), 2000);
+    }
+}
+
+// Спот для отслеживания изменения состояния воспроизведения плеера
+void AudioPlayer::on_player_playbackStateChanged(QMediaPlayer::PlaybackState state)
+{
+    switch (state) {
+    case QMediaPlayer::PlayingState:
+        ui.actionPlayPause->setIcon(pauseIcon); // Если играет, показываем иконку "Пауза"
+        ui.statusBar->showMessage(tr("Playing: %1").arg(QFileInfo(player->source().toLocalFile()).fileName()));
+        break;
+    case QMediaPlayer::PausedState:
+        ui.actionPlayPause->setIcon(playIcon);  // Если на паузе, показываем иконку "Воспроизвести"
+        ui.statusBar->showMessage(tr("Paused."));
+        break;
+    case QMediaPlayer::StoppedState:
+        ui.actionPlayPause->setIcon(playIcon);  // Если остановлено, показываем иконку "Воспроизвести"
+        // Очищаем строку состояния, если плеер полностью остановлен
+        ui.statusBar->showMessage(tr("Ready."));
+        break;
+    default:
+        // Можно добавить обработку других состояний, если необходимо
+        break;
+    }
+}
+
+// Слот для остановки
+void AudioPlayer::on_actionStop_triggered()
+{
+    if (player->source().isValid()) {
+        player->stop(); // Останавливаем воспроизведение
+        ui.statusBar->showMessage(tr("Stopped."));
+    }
+    else ui.statusBar->showMessage(tr("First select the file."), 2000);
+}
+
+// Вспомогательная функция для форматирования времени (например, 00:00:00)
+QString AudioPlayer::formatTime(qint64 milliseconds)
+{
+    qint64 seconds = milliseconds / 1000;
+    QTime time(0, 0, 0); // Создаем объект времени, инициализируем нулями
+    time = time.addSecs(static_cast<int>(seconds)); // Добавляем секунды
+
+    if (seconds < 3600) { // Если меньше часа, формат MM:SS
+        return time.toString("mm:ss");
+    }
+    else { // Если час и более, формат HH:MM:SS
+        return time.toString("hh:mm:ss");
+    }
+}
+
+// Слот, вызываемый при изменении текущей позиции воспроизведения плеера
+void AudioPlayer::on_player_positionChanged(qint64 position)
+{
+    // Обновляем ползунок только если пользователь его сейчас не перетаскивает
+    // Это предотвращает "прыжки" ползунка, когда плеер пытается обновить его во время перетаскивания пользователем
+    if (!isSeeking) {
+        ui.positionSlider->setValue(static_cast<int>(position));
+        ui.positionLabel->setText(formatTime(position)); // Обновляем метку текущего времени только здесь
+    }
+    // Если isSeeking = true, метка времени будет обновляться в on_positionSlider_valueChanged/sliderMoved
+}
+
+// Слот, вызываемый при изменении общей длительности аудиофайла
+void AudioPlayer::on_player_durationChanged(qint64 duration)
+{
+    ui.positionSlider->setMaximum(static_cast<int>(duration)); // Устанавливаем максимальное значение ползунка
+    ui.durationLabel->setText(formatTime(duration)); // Обновляем метку общей длительности
+}
+
+// Слот, вызываемый, когда пользователь начинает перетаскивать ползунок
+void AudioPlayer::on_positionSlider_sliderPressed()
+{
+    isSeeking = true; // Устанавливаем флаг, чтобы плеер не обновлял ползунок
+}
+
+// Слот, вызываемый, когда пользователь отпускает ползунок
+void AudioPlayer::on_positionSlider_sliderReleased()
+{
+    // Устанавливаем позицию плеера на значение ползунка
+    player->setPosition(ui.positionSlider->value());
+    isSeeking = false; // Сбрасываем флаг
+
+    // После отпускания ползунка, обновляем метку текущего времени,
+    // чтобы она соответствовала новой позиции плеера (которая будет подтверждена positionChanged)
+    ui.positionLabel->setText(formatTime(player->position()));
+}
+
+// Слот, вызываемый при каждом изменении значения ползунка (в том числе при перетаскивании)
+// Теперь этот слот будет только обновлять метку времени при перетаскивании
+void AudioPlayer::on_positionSlider_valueChanged(int value)
+{
+    // Если пользователь перетаскивает ползунок (isSeeking == true),
+    // мы хотим немедленно показать время, соответствующее положению ползунка.
+    // Это делает перемещение визуально более плавным.
+    if (isSeeking) {
+        ui.positionLabel->setText(formatTime(value));
+    }
+    // В противном случае, если !isSeeking, это изменение значения произошло программно (из player->positionChanged),
+    // и метка уже обновлена в on_player_positionChanged.
+}

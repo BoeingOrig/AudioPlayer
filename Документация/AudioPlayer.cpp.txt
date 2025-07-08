@@ -1,0 +1,155 @@
+#include "AudioPlayer.h" // Используем заголовочный файл
+#include <QFileDialog>   // Директория для диалога открытия файла
+#include <QUrl>          // Директория для работы с URL файлов
+#include <QFileInfo>     // Директория для получения имени файла
+#include <QDebug>        // Директория для отладочных сообщений
+#include <QSlider>       // Директория для работы со слайдером
+#include <QCloseEvent>   // Для closeEvent
+#include <QSettings>     // Для QSettings
+
+// Конструктор класса AudioPlayer
+AudioPlayer::AudioPlayer(QWidget* parent)
+    : QMainWindow(parent)
+    , ui() // Инициализируем объект ui
+{
+    ui.setupUi(this); // Настраиваем пользовательский интерфейс, определенный в .ui файле
+
+    // Инициализация QAudioOutput перед QMediaPlayer
+    // Создаем объект для вывода аудио. 'this' указывает, что родительским объектом является AudioPlayer,
+    // что обеспечивает автоматическое удаление при удалении AudioPlayer.
+    audioOutput = new QAudioOutput(this);
+
+    // Создаем объект плеера. 'this' также указывает родительский объект.
+    player = new QMediaPlayer(this);
+
+    // Связываем плеер с выводом аудио. Это необходимо для того, чтобы плеер знал,
+    // куда отправлять звуковые данные.
+    player->setAudioOutput(audioOutput);
+
+    // Инициализируем иконки (используй правильные пути к своим иконкам!)
+    playIcon = QIcon(":/res/icons/icon_play.png");
+    pauseIcon = QIcon(":/res/icons/icon_pause.png");
+
+    // Устанавливаем начальную иконку для кнопки "Воспроизвести"
+    // Мы предполагаем, что actionPlay - это та кнопка, которую ты хочешь использовать для play/pause
+    ui.actionPlayPause->setIcon(playIcon);
+
+    // Подключаем сигнал изменения состояния воспроизведения плеера к нашему слоту
+    connect(player, &QMediaPlayer::playbackStateChanged, this, &AudioPlayer::on_player_playbackStateChanged);
+
+    // Создаем объект QSettings.
+    // Первый параметр - название организации, второй - название приложения.
+    // Это важно для того, чтобы QSettings знал, куда сохранять настройки.
+    QSettings settings("ByteWorks", "AudioPlayer");
+
+    // Загружаем сохраненную громкость. Если настройка не найдена, используем 0.75 по умолчанию.
+    qreal savedVolume = settings.value("volume", 0.75).toReal();
+
+    // Устанавливаем начальное значение громкости QAudioOutput
+    // Qt по умолчанию устанавливает громкость в 0.75
+    audioOutput->setVolume(0.75); // Устанавливаем начальную громкость на максимум
+
+    // Устанавливаем начальное значение ползунка громкости
+    // Максимальное значение слайдера - 100, максимальная громкость - 1.0
+    ui.volumeSlider->setValue(75);
+
+    // Подключаем сигнал изменения значения ползунка к слоту изменения громкости audioOutput
+    // Значение слайдера (0-100) нужно перевести в диапазон (0.0-1.0) для setVolume
+    connect(ui.volumeSlider, &QSlider::valueChanged, [this](int value) {
+        // Переводим значение из 0-100 в 0.0-1.0
+        qreal volume = value / 100.0;
+        audioOutput->setVolume(volume);
+        });
+}
+
+// Деструктор класса AudioPlayer
+// Освобождение памяти для объектов, созданных с 'new',
+// но в данном случае QMediaPlayer и QAudioOutput удалятся автоматически,
+// так как у них указан родительский объект 'this' в конструкторе.
+AudioPlayer::~AudioPlayer()
+{
+    // ui.AudioPlayerClass ui - это объект, он удаляется автоматически
+    // Если бы ui был указателем (Ui::AudioPlayerClass *ui), то здесь был бы 'delete ui;'
+}
+
+// Переопределение closeEvent для сохранения настроек
+void AudioPlayer::closeEvent(QCloseEvent* event)
+{
+    QSettings settings("ByteWorks", "AudioPlayer"); // Используем те же названия организации и приложения
+    // Сохраняем текущее значение громкости
+    settings.setValue("volume", audioOutput->volume());
+    // Вызываем базовую реализацию closeEvent, чтобы окно действительно закрылось
+    QMainWindow::closeEvent(event);
+}
+
+//  Слот для открытия аудиофайла
+void AudioPlayer::on_actionOpen_File_triggered()
+{
+    // Открываем стандартный диалог выбора файла.
+    // Первый параметр: родительское окно.
+    // Второй параметр: заголовок диалога.
+    // Третий параметр: начальный каталог (пустая строка означает текущий или последний использованный).
+    // Четвертый параметр: фильтр файлов, чтобы показывать только аудиофайлы.
+    QString filePath = QFileDialog::getOpenFileName(this, tr("Open audio file"), "", tr("Audio files (*.mp3 *.wav *.flac *.ogg);;All files (*.*)"));
+
+    if (!filePath.isEmpty()) { // Если пользователь выбрал файл и не отменил диалог
+        // Устанавливаем выбранный файл как источник для плеера.
+        // QUrl::fromLocalFile() преобразует локальный путь к файлу в формат URL,
+        // который QMediaPlayer может использовать.
+        player->setSource(QUrl::fromLocalFile(filePath));
+
+        // Отображаем имя выбранного файла в строке состояния приложения.
+        // QFileInfo(filePath).fileName() извлекает только имя файла из полного пути.
+        ui.statusBar->showMessage(tr("File selected: %1").arg(QFileInfo(filePath).fileName()));
+    }
+}
+
+// Спот для отслеживания изменения состояния воспроизведения плеера
+void AudioPlayer::on_actionPlayPause_triggered() // <--- Теперь этот слот будет выполнять роль Play/Pause
+{
+    if (player->source().isValid()) {
+        if (player->playbackState() == QMediaPlayer::PlayingState) {
+            player->pause(); // Если играет, ставим на паузу
+        }
+        else if (player->playbackState() == QMediaPlayer::PausedState || player->playbackState() == QMediaPlayer::StoppedState) {
+            player->play();  // Если на паузе или остановлено, воспроизводим
+        }
+    }
+    else {
+        // Если файл не выбран, пытаемся открыть диалог выбора файла
+        ui.statusBar->showMessage(tr("No file selected. Please open a file first."), 2000);
+    }
+}
+
+// Спот для отслеживания изменения состояния воспроизведения плеера
+void AudioPlayer::on_player_playbackStateChanged(QMediaPlayer::PlaybackState state)
+{
+    switch (state) {
+    case QMediaPlayer::PlayingState:
+        ui.actionPlayPause->setIcon(pauseIcon); // Если играет, показываем иконку "Пауза"
+        ui.statusBar->showMessage(tr("Playing: %1").arg(QFileInfo(player->source().toLocalFile()).fileName()));
+        break;
+    case QMediaPlayer::PausedState:
+        ui.actionPlayPause->setIcon(playIcon);  // Если на паузе, показываем иконку "Воспроизвести"
+        ui.statusBar->showMessage(tr("Paused."));
+        break;
+    case QMediaPlayer::StoppedState:
+        ui.actionPlayPause->setIcon(playIcon);  // Если остановлено, показываем иконку "Воспроизвести"
+        // Очищаем строку состояния, если плеер полностью остановлен
+        ui.statusBar->showMessage(tr("Ready."));
+        break;
+    default:
+        // Можно добавить обработку других состояний, если необходимо
+        break;
+    }
+}
+
+// Слот для остановки
+void AudioPlayer::on_actionStop_triggered()
+{
+    if (player->source().isValid()) {
+        player->stop(); // Останавливаем воспроизведение
+        ui.statusBar->showMessage(tr("Stopped."));
+    }
+    else ui.statusBar->showMessage(tr("First select the file."), 2000);
+}
