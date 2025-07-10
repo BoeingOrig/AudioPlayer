@@ -6,6 +6,7 @@
 #include <QSlider>       // Директория для работы со слайдером
 #include <QCloseEvent>   // Для closeEvent
 #include <QSettings>     // Для QSettings
+#include <QTime>         // Директория для форматирования времени
 
 // Конструктор класса AudioPlayer
 AudioPlayer::AudioPlayer(QWidget* parent)
@@ -40,26 +41,42 @@ AudioPlayer::AudioPlayer(QWidget* parent)
     // Создаем объект QSettings.
     // Первый параметр - название организации, второй - название приложения.
     // Это важно для того, чтобы QSettings знал, куда сохранять настройки.
-    QSettings settings("ByteWorks", "AudioPlayer");
+    QSettings settings("ByteWorks", "AudioPlayer"); // Создаем объект QSettings [cite: 11]
 
     // Загружаем сохраненную громкость. Если настройка не найдена, используем 0.75 по умолчанию.
-    qreal savedVolume = settings.value("volume", 0.75).toReal();
+    // Мы хотим, чтобы по умолчанию было 0.75, если до этого ничего не сохранялось.
+    qreal savedVolume = settings.value("volume", 0.75).toReal(); // Использовать 0.75 по умолчанию
+    qDebug() << "Загруженная громкость (из настроек):" << savedVolume; // Отладочное сообщение
 
-    // Устанавливаем начальное значение громкости QAudioOutput
-    // Qt по умолчанию устанавливает громкость в 0.75
-    audioOutput->setVolume(0.75); // Устанавливаем начальную громкость на максимум
+    // Устанавливаем загруженную громкость для QAudioOutput
+    audioOutput->setVolume(savedVolume); // ИСПОЛЬЗУЕМ ЗАГРУЖЕННОЕ ЗНАЧЕНИЕ!
 
-    // Устанавливаем начальное значение ползунка громкости
-    // Максимальное значение слайдера - 100, максимальная громкость - 1.0
-    ui.volumeSlider->setValue(75);
+    // Устанавливаем значение ползунка громкости, соответствующее загруженной громкости
+    ui.volumeSlider->setValue(static_cast<int>(savedVolume * 100)); // ИСПОЛЬЗУЕМ ЗАГРУЖЕННОЕ ЗНАЧЕНИЕ!
+    qDebug() << "Ползунок установлен на:" << ui.volumeSlider->value(); // Отладочное сообщение
 
     // Подключаем сигнал изменения значения ползунка к слоту изменения громкости audioOutput
-    // Значение слайдера (0-100) нужно перевести в диапазон (0.0-1.0) для setVolume
     connect(ui.volumeSlider, &QSlider::valueChanged, [this](int value) {
-        // Переводим значение из 0-100 в 0.0-1.0
         qreal volume = value / 100.0;
         audioOutput->setVolume(volume);
-        });
+        qDebug() << "Громкость изменена через ползунок на:" << volume; // Отладочное сообщение
+    });
+
+    // Инициализируем метки времени
+    ui.positionLabel->setText(formatTime(0));
+    ui.durationLabel->setText(formatTime(0));
+
+    // Подключаем сигналы плеера к нашим слотам
+    connect(player, &QMediaPlayer::positionChanged, this, &AudioPlayer::on_player_positionChanged);
+    connect(player, &QMediaPlayer::durationChanged, this, &AudioPlayer::on_player_durationChanged);
+
+    // Подключаем сигналы ползунка времени к нашим слотам
+    connect(ui.positionSlider, &QSlider::sliderPressed, this, &AudioPlayer::on_positionSlider_sliderPressed);
+    connect(ui.positionSlider, &QSlider::sliderReleased, this, &AudioPlayer::on_positionSlider_sliderReleased);
+    // Это подключение будет обновлять метку времени при перетаскивании, но не будет изменять позицию плеера
+    connect(ui.positionSlider, &QSlider::valueChanged, this, &AudioPlayer::on_positionSlider_valueChanged);
+    // Это подключение будет обновлять метку времени при перетаскивании, но не будет изменять позицию плеера
+    connect(ui.positionSlider, &QSlider::valueChanged, this, &AudioPlayer::on_positionSlider_valueChanged);
 }
 
 // Деструктор класса AudioPlayer
@@ -75,10 +92,16 @@ AudioPlayer::~AudioPlayer()
 // Переопределение closeEvent для сохранения настроек
 void AudioPlayer::closeEvent(QCloseEvent* event)
 {
-    QSettings settings("ByteWorks", "AudioPlayer"); // Используем те же названия организации и приложения
-    // Сохраняем текущее значение громкости
-    settings.setValue("volume", audioOutput->volume());
-    // Вызываем базовую реализацию closeEvent, чтобы окно действительно закрылось
+    QSettings settings("ByteWorks", "AudioPlayer"); // Используй те же названия организации и приложения!
+    qreal currentVolume = audioOutput->volume();
+    settings.setValue("volume", currentVolume);
+    qDebug() << "Сохранение громкости при закрытии:" << currentVolume; // Отладочное сообщение
+
+    // Обязательно синхронизируем настройки, чтобы они были немедленно записаны на диск
+    // Иногда это помогает, если приложение закрывается очень быстро.
+    settings.sync();
+    qDebug() << "Настройки синхронизированы.";
+
     QMainWindow::closeEvent(event);
 }
 
@@ -152,4 +175,70 @@ void AudioPlayer::on_actionStop_triggered()
         ui.statusBar->showMessage(tr("Stopped."));
     }
     else ui.statusBar->showMessage(tr("First select the file."), 2000);
+}
+
+// Вспомогательная функция для форматирования времени (например, 00:00:00)
+QString AudioPlayer::formatTime(qint64 milliseconds)
+{
+    qint64 seconds = milliseconds / 1000;
+    QTime time(0, 0, 0); // Создаем объект времени, инициализируем нулями
+    time = time.addSecs(static_cast<int>(seconds)); // Добавляем секунды
+
+    if (seconds < 3600) { // Если меньше часа, формат MM:SS
+        return time.toString("mm:ss");
+    }
+    else { // Если час и более, формат HH:MM:SS
+        return time.toString("hh:mm:ss");
+    }
+}
+
+// Слот, вызываемый при изменении текущей позиции воспроизведения плеера
+void AudioPlayer::on_player_positionChanged(qint64 position)
+{
+    // Обновляем ползунок только если пользователь его сейчас не перетаскивает
+    // Это предотвращает "прыжки" ползунка, когда плеер пытается обновить его во время перетаскивания пользователем
+    if (!isSeeking) {
+        ui.positionSlider->setValue(static_cast<int>(position));
+        ui.positionLabel->setText(formatTime(position)); // Обновляем метку текущего времени только здесь
+    }
+    // Если isSeeking = true, метка времени будет обновляться в on_positionSlider_valueChanged/sliderMoved
+}
+
+// Слот, вызываемый при изменении общей длительности аудиофайла
+void AudioPlayer::on_player_durationChanged(qint64 duration)
+{
+    ui.positionSlider->setMaximum(static_cast<int>(duration)); // Устанавливаем максимальное значение ползунка
+    ui.durationLabel->setText(formatTime(duration)); // Обновляем метку общей длительности
+}
+
+// Слот, вызываемый, когда пользователь начинает перетаскивать ползунок
+void AudioPlayer::on_positionSlider_sliderPressed()
+{
+    isSeeking = true; // Устанавливаем флаг, чтобы плеер не обновлял ползунок
+}
+
+// Слот, вызываемый, когда пользователь отпускает ползунок
+void AudioPlayer::on_positionSlider_sliderReleased()
+{
+    // Устанавливаем позицию плеера на значение ползунка
+    player->setPosition(ui.positionSlider->value());
+    isSeeking = false; // Сбрасываем флаг
+
+    // После отпускания ползунка, обновляем метку текущего времени,
+    // чтобы она соответствовала новой позиции плеера (которая будет подтверждена positionChanged)
+    ui.positionLabel->setText(formatTime(player->position()));
+}
+
+// Слот, вызываемый при каждом изменении значения ползунка (в том числе при перетаскивании)
+// Теперь этот слот будет только обновлять метку времени при перетаскивании
+void AudioPlayer::on_positionSlider_valueChanged(int value)
+{
+    // Если пользователь перетаскивает ползунок (isSeeking == true),
+    // мы хотим немедленно показать время, соответствующее положению ползунка.
+    // Это делает перемещение визуально более плавным.
+    if (isSeeking) {
+        ui.positionLabel->setText(formatTime(value));
+    }
+    // В противном случае, если !isSeeking, это изменение значения произошло программно (из player->positionChanged),
+    // и метка уже обновлена в on_player_positionChanged.
 }
